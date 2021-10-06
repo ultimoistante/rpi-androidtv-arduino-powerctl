@@ -69,7 +69,9 @@ using namespace ace_button;
 #define HW_SERIAL_BAUDRATE            115200
 #define SW_SERIAL_BAUDRATE            57600
 
-#define READ_TEMPERATURE_INTERVAL     1000
+#define DUMP_TO_DEBUG_SERIAL
+
+#define READ_TEMPERATURE_INTERVAL     2500
 
 float currentTemperature = 0;
 unsigned long next_read_temperature_time = 0;
@@ -90,6 +92,11 @@ auto poweronStatusLed = JLed(STATUS_LED_GREEN_PIN);
 // power button
 AceButton powerButton(POWER_BUTTON_PIN);
 
+#define MAX_SERIAL_BUFFER   511
+char serialBuffer[MAX_SERIAL_BUFFER + 1];
+unsigned int serialBufferIndex = 0;
+
+volatile unsigned char interruptCounter = 0;
 
 // ----------------------------------------------------------------------------
 
@@ -97,10 +104,15 @@ AceButton powerButton(POWER_BUTTON_PIN);
 // Interrupt handler called once a millisecond
 SIGNAL(TIMER0_COMPA_vect)
     {
-    standbyStatusLed.Update();
-    poweronStatusLed.Update();
+    interruptCounter++;
+    if (interruptCounter == 50)
+        {
+        standbyStatusLed.Update();
+        poweronStatusLed.Update();
+        interruptCounter = 0;
+        }
     //
-    powerButton.check();
+    // powerButton.check();
     }
 
 
@@ -187,6 +199,10 @@ void updateCurrentStatus(unsigned char newStatus)
                 poweronStatusLed.Breathe(2000).Forever();
                 break;
             case STATUS_SHUTDOWN:
+                standbyStatusLed.Blink(25, 250).Forever();
+                poweronStatusLed.Off();
+                // sends shutdown command to android device
+                Serial.println("reboot -p");
                 break;
         }
     }
@@ -201,13 +217,16 @@ void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t /*buttonSta
         {
         // handles "released" event as a "pressed" event, to distiguish it from a "long pressed" event
             case AceButton::kEventReleased:
-                Serial.println("button pressed");
+                debugSerial.println("[I] button pressed");
                 // standbyStatusLed.Off();
                 // poweronStatusLed.Breathe(5000).Forever();
                 if (currentStatus == STATUS_STANDBY)
                     updateCurrentStatus(STATUS_BOOTING);
-                else
-                    updateCurrentStatus(STATUS_ON);
+                else if (currentStatus == STATUS_ON)
+                    updateCurrentStatus(STATUS_SHUTDOWN);
+
+                // else
+                //     updateCurrentStatus(STATUS_ON);
 
 
                 // if (currentWorkingMode == WORK_MODE_NORMAL)
@@ -228,6 +247,7 @@ void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t /*buttonSta
 // ----------------------------------------------------------------------------
 
 
+
 void setup()
     {
     // for more stable readings, AREF pin is connected to 3.3V, so we set analogReference to EXTERNAL
@@ -242,6 +262,8 @@ void setup()
     // sets RELAY_PIN mode to output, and low
     pinMode(RELAY_PIN, OUTPUT);
     digitalWrite(RELAY_PIN, LOW);
+    //
+    pinMode(UART_ACT_LED_PIN, OUTPUT);
     //
     // enables interrupt on "Compare A" function of Timer0 (already used for millis())
     OCR0A = 0xAF;
@@ -258,6 +280,8 @@ void setup()
     //
     // initializes device status
     updateCurrentStatus(STATUS_STANDBY);
+    //
+    debugSerial.println("[I] device ready");
     }
 
 
@@ -265,33 +289,81 @@ void setup()
 
 
 unsigned long next_serialout_time = 0;
+unsigned long shutdown_complete_time = 0;
 
 void loop()
     {
     unsigned long now = millis();
+    char c;
 
-    if (now >= next_serialout_time)
+    if (shutdown_complete_time && now >= shutdown_complete_time)
         {
-        debugSerial.println(now);
-        next_serialout_time = now + 1000;
+        updateCurrentStatus(STATUS_STANDBY);
+        shutdown_complete_time = 0;
         }
+
+    while (Serial.available())
+        {
+        digitalWrite(UART_ACT_LED_PIN, HIGH);
+        c = Serial.read();
+        if (c != '\r' && c != '\n')
+            {
+            serialBuffer[serialBufferIndex] = c;
+            serialBuffer[serialBufferIndex + 1] = '\0';
+            if (serialBufferIndex < MAX_SERIAL_BUFFER)
+                serialBufferIndex++;
+            }
+        else
+            {
+#ifdef DUMP_TO_DEBUG_SERIAL
+            debugSerial.println(serialBuffer);
+#endif
+            // if android is booting, waits for log line containing "init: starting service 'wpa_supplicant'" string 
+            if (currentStatus == STATUS_BOOTING)
+                {
+                // init: starting service 'wpa_supplicant'
+                if (strstr(serialBuffer, "sdcardfs: dev_name -> /data/media") != NULL)
+                    updateCurrentStatus(STATUS_ON);
+                }
+
+            if (currentStatus == STATUS_SHUTDOWN)
+                {
+                // reboot: Power down
+                if (strstr(serialBuffer, "reboot: Power down") != NULL)
+                    shutdown_complete_time = now + 5000;
+                }
+
+            serialBufferIndex = 0;
+            }
+        }
+    digitalWrite(UART_ACT_LED_PIN, LOW);
+
+    // if (now >= next_serialout_time)
+    //     {
+    //     debugSerial.println(now);
+    //     next_serialout_time = now + 1000;
+    //     }
 
 
 
     if (now >= next_read_temperature_time)
         {
         currentTemperature = readTemperature();
-        Serial.print("Temperature ");
-        Serial.print(currentTemperature);
-        Serial.println(" *C");
-        //
         int pwmValue = computeFanPwm(currentTemperature);
         analogWrite(FAN_THROTTLE_PIN, pwmValue);
-        Serial.print("pwmValue ");
-        Serial.println(pwmValue);
+        //
+        debugSerial.print("[I] T: ");
+        debugSerial.print(currentTemperature);
+        debugSerial.print(" *C - pwm: ");
+        debugSerial.println(pwmValue);
         //
         next_read_temperature_time = millis() + READ_TEMPERATURE_INTERVAL;
         }
+
+    // standbyStatusLed.Update();
+    // poweronStatusLed.Update();
+    //
+    powerButton.check();
 
     }
 
