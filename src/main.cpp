@@ -151,7 +151,7 @@ float readTemperature()
 
 
 // computes fan pwm value, based on temperature read.
-// Mapping inspired by arduino "map" function:
+// Temperature to PWM mapping is similar to arduino "map" function:
 //    long map(long x, long in_min, long in_max, long out_min, long out_max) {
 //        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 //    }
