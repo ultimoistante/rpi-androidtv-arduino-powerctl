@@ -7,7 +7,7 @@
  ** Communicates with RaspberryPi via UART connection, sending commands (i.e.: shutdown).
  ** It also controls case fan throttling reading RaspberryPi CPU temperature using a thermistor.
  **
- ** Author: Salvatore Carotenuto of OpenMakersItaly
+ ** Author: Salvatore Carotenuto of OpenMakersItaly, aka ultimoistante
  **
  ** Credits:
  **   Temperature reading code taken from: https://learn.adafruit.com/thermistor/using-a-thermistor
@@ -51,36 +51,48 @@ using namespace ace_button;
 
 
 #define THERMISTOR_PIN                A0
-#define RELAY_PIN                     2
 #define STATUS_LED_RED_PIN            11
 #define STATUS_LED_GREEN_PIN          10
 #define UART_ACT_LED_PIN              9
 #define POWER_BUTTON_PIN              8
 #define FAN_THROTTLE_PIN              5
+#define RELAY_PIN                     2
 #define SW_SERIAL_RX_PIN              A4
 #define SW_SERIAL_TX_PIN              A5
 
 #define THERMISTOR_SERIES_RESISTOR    10000 // the value of the 'other' resistor in voltage divider
-#define THERMISTOR_NOMINAL_R          10000      // nominal thermistor resistance at 25 degrees C
-#define THERMISTOR_NOMINAL_TEMP       25   // thermistor nominal resistance temperature (almost always 25 C)
-#define THERMISTOR_BETA_COEFFICIENT   3950 // thermistor beta coefficient (usually 3000-4000)
-#define TEMPERATURE_READ_SAMPLES      5 // how many samples to take and average, more takes longer, but is more 'smooth'
+#define THERMISTOR_NOMINAL_R          10000 // nominal thermistor resistance at 25 degrees C
+#define THERMISTOR_NOMINAL_TEMP       25    // thermistor nominal resistance temperature (almost always 25 C)
+#define THERMISTOR_BETA_COEFFICIENT   3950  // thermistor beta coefficient (usually 3000-4000)
+#define TEMPERATURE_READ_SAMPLES      5     // how many samples to take and average, more takes longer, but is more 'smooth'
 
 #define HW_SERIAL_BAUDRATE            115200
 #define SW_SERIAL_BAUDRATE            57600
 
 #define DUMP_TO_DEBUG_SERIAL
 
-#define READ_TEMPERATURE_INTERVAL     2500
-
+#define READ_TEMPERATURE_INTERVAL           2500
+#define FAN_THROTTLE_MIN_TEMP               30.0
+#define FAN_THROTTLE_MIN_TEMP_HYSTERESIS    2.0
+#define FAN_THROTTLE_MAX_TEMP               50.0
+#define FAN_THROTTLE_MIN_PWM                16
+#define FAN_THROTTLE_MAX_PWM                255
 float currentTemperature = 0;
 unsigned long next_read_temperature_time = 0;
+unsigned char fan_was_activated = 0;
+
+#define POWER_BUTTON_LONGPRESS_DELAY        2000
+
+#define SHUTDOWN_GRACE_TIME_MSECS           5000
 
 #define STATUS_STANDBY                  0
 #define STATUS_BOOTING                  1
 #define STATUS_ON                       2
 #define STATUS_SHUTDOWN                 3
 unsigned char currentStatus = STATUS_STANDBY;
+
+#define ANDROID_BOOT_COMPLETE_LOG_LINE      "sdcardfs: dev_name -> /data/media"
+#define ANDROID_SHUTDOWN_COMPLETE_LOG_LINE  "reboot: Power down"
 
 // debug (software) serial
 SoftwareSerial debugSerial(SW_SERIAL_RX_PIN, SW_SERIAL_TX_PIN); // RX, TX
@@ -98,6 +110,9 @@ unsigned int serialBufferIndex = 0;
 
 volatile unsigned char interruptCounter = 0;
 
+unsigned long shutdown_grace_time = 0;
+
+
 // ----------------------------------------------------------------------------
 
 
@@ -105,14 +120,12 @@ volatile unsigned char interruptCounter = 0;
 SIGNAL(TIMER0_COMPA_vect)
     {
     interruptCounter++;
-    if (interruptCounter == 50)
+    if (interruptCounter == 50) // updates leds every 50msecs
         {
         standbyStatusLed.Update();
         poweronStatusLed.Update();
         interruptCounter = 0;
         }
-    //
-    // powerButton.check();
     }
 
 
@@ -135,12 +148,12 @@ float readTemperature()
     average = THERMISTOR_SERIES_RESISTOR / average;
 
     float steinhart;
-    steinhart = average / THERMISTOR_NOMINAL_R;     // (R/Ro)
-    steinhart = log(steinhart);                  // ln(R/Ro)
-    steinhart /= THERMISTOR_BETA_COEFFICIENT;                   // 1/B * ln(R/Ro)
+    steinhart = average / THERMISTOR_NOMINAL_R;            // (R/Ro)
+    steinhart = log(steinhart);                            // ln(R/Ro)
+    steinhart /= THERMISTOR_BETA_COEFFICIENT;              // 1/B * ln(R/Ro)
     steinhart += 1.0 / (THERMISTOR_NOMINAL_TEMP + 273.15); // + (1/To)
-    steinhart = 1.0 / steinhart;                 // Invert
-    steinhart -= 273.15;                         // convert absolute temp to C
+    steinhart = 1.0 / steinhart;                           // Invert
+    steinhart -= 273.15;                                   // convert absolute temp to C
     //
     return steinhart;
     }
@@ -150,27 +163,38 @@ float readTemperature()
 // ----------------------------------------------------------------------------
 
 
-// computes fan pwm value, based on temperature read.
+// computes fan pwm value, based on temperature read. Also handles shutdown hysteresis.
 // Temperature to PWM mapping is similar to arduino "map" function:
 //    long map(long x, long in_min, long in_max, long out_min, long out_max) {
 //        return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 //    }
 // 
-int computeFanPwm(float temperature)
+unsigned char computeFanPwm(float temperature)
     {
-    int pwmValue = 0;
-    float minTemp = 30.0;
-    float maxTemp = 60.0;
-    int minPwm = 16;
-    int maxPwm = 255;
-    if (temperature >= maxTemp)
-        return maxPwm;
+    unsigned char pwmValue = 0;
+    float minTemp = fan_was_activated ? (FAN_THROTTLE_MIN_TEMP - FAN_THROTTLE_MIN_TEMP_HYSTERESIS) : FAN_THROTTLE_MIN_TEMP;
+    float maxTemp = FAN_THROTTLE_MAX_TEMP;
+    //
+    if (temperature <= minTemp)
+        {
+        pwmValue = 0;
+        fan_was_activated = 0;
+        }
     else
-        if (temperature > minTemp && temperature < maxTemp)
+        {
+        fan_was_activated = 1;
+        //
+        if (temperature >= maxTemp)
+            pwmValue = FAN_THROTTLE_MAX_PWM;
+        else
             {
-            float mappedValue = (temperature - minTemp) * (maxPwm - minPwm) / (maxTemp - minTemp) + minPwm;
-            pwmValue = int(mappedValue);
+            if (temperature > minTemp && temperature < maxTemp)
+                {
+                float mappedValue = (temperature - minTemp) * (FAN_THROTTLE_MAX_PWM - FAN_THROTTLE_MIN_PWM) / (maxTemp - minTemp) + FAN_THROTTLE_MIN_PWM;
+                pwmValue = int(mappedValue);
+                }
             }
+        }
     //
     return pwmValue;
     }
@@ -218,27 +242,18 @@ void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t /*buttonSta
         // handles "released" event as a "pressed" event, to distiguish it from a "long pressed" event
             case AceButton::kEventReleased:
                 debugSerial.println("[I] button pressed");
-                // standbyStatusLed.Off();
-                // poweronStatusLed.Breathe(5000).Forever();
                 if (currentStatus == STATUS_STANDBY)
                     updateCurrentStatus(STATUS_BOOTING);
                 else if (currentStatus == STATUS_ON)
                     updateCurrentStatus(STATUS_SHUTDOWN);
-
-                // else
-                //     updateCurrentStatus(STATUS_ON);
-
-
-                // if (currentWorkingMode == WORK_MODE_NORMAL)
-                //   currentWorkingMode = WORK_MODE_ENTER_LEARNING;
-                // else if (currentWorkingMode == WORK_MODE_FACTORY_RESET)
-                //   currentWorkingMode = WORK_MODE_FACTORY_RESET_CONFIRMED;
                 break;
                 // 
             // handles "long pressed" event
             case AceButton::kEventLongPressed:
-                // if (currentWorkingMode == WORK_MODE_NORMAL)
-                //   currentWorkingMode = WORK_MODE_FACTORY_RESET;
+                debugSerial.println("[I] button LONG pressed");
+                // emergency shutdown: returns to STATUS_STANDBY (deactivates relay)
+                if (currentStatus != STATUS_STANDBY)
+                    updateCurrentStatus(STATUS_STANDBY);
                 break;
         }
     }
@@ -269,9 +284,12 @@ void setup()
     OCR0A = 0xAF;
     TIMSK0 |= _BV(OCIE0A);
     //
-    // user button handler configuration
+    // user button configuration
     ButtonConfig* buttonConfig = ButtonConfig::getSystemButtonConfig();
     buttonConfig->setEventHandler(handleButtonEvent);
+    buttonConfig->setFeature(ButtonConfig::kFeatureLongPress);
+    buttonConfig->setFeature(ButtonConfig::kFeatureSuppressAfterLongPress);
+    buttonConfig->setLongPressDelay(POWER_BUTTON_LONGPRESS_DELAY);
     //
     // starts hardware serial (connected to RaspberryPi serial)
     Serial.begin(HW_SERIAL_BAUDRATE);
@@ -288,20 +306,21 @@ void setup()
 // ----------------------------------------------------------------------------
 
 
-unsigned long next_serialout_time = 0;
-unsigned long shutdown_complete_time = 0;
-
 void loop()
     {
     unsigned long now = millis();
     char c;
-
-    if (shutdown_complete_time && now >= shutdown_complete_time)
+    //
+    //
+    // if we have requested shutdown, checks if passed shutdown grace time
+    if (shutdown_grace_time && now >= shutdown_grace_time)
         {
         updateCurrentStatus(STATUS_STANDBY);
-        shutdown_complete_time = 0;
+        shutdown_grace_time = 0;
         }
-
+    //
+    //
+    // handles reading from android serial 
     while (Serial.available())
         {
         digitalWrite(UART_ACT_LED_PIN, HIGH);
@@ -318,38 +337,31 @@ void loop()
 #ifdef DUMP_TO_DEBUG_SERIAL
             debugSerial.println(serialBuffer);
 #endif
-            // if android is booting, waits for log line containing "init: starting service 'wpa_supplicant'" string 
+            // if android is booting, waits for log line dumped on boot complete
             if (currentStatus == STATUS_BOOTING)
                 {
-                // init: starting service 'wpa_supplicant'
-                if (strstr(serialBuffer, "sdcardfs: dev_name -> /data/media") != NULL)
+                if (strstr(serialBuffer, ANDROID_BOOT_COMPLETE_LOG_LINE) != NULL)
                     updateCurrentStatus(STATUS_ON);
                 }
 
+            // if android is doing shutdown, waits for log line dumped on shutdown complete
             if (currentStatus == STATUS_SHUTDOWN)
                 {
-                // reboot: Power down
-                if (strstr(serialBuffer, "reboot: Power down") != NULL)
-                    shutdown_complete_time = now + 5000;
+                if (strstr(serialBuffer, ANDROID_SHUTDOWN_COMPLETE_LOG_LINE) != NULL)
+                    shutdown_grace_time = now + SHUTDOWN_GRACE_TIME_MSECS;
                 }
 
             serialBufferIndex = 0;
             }
         }
     digitalWrite(UART_ACT_LED_PIN, LOW);
-
-    // if (now >= next_serialout_time)
-    //     {
-    //     debugSerial.println(now);
-    //     next_serialout_time = now + 1000;
-    //     }
-
-
-
+    //
+    //
+    // reads temperature and handles fan pwm
     if (now >= next_read_temperature_time)
         {
         currentTemperature = readTemperature();
-        int pwmValue = computeFanPwm(currentTemperature);
+        unsigned char pwmValue = computeFanPwm(currentTemperature);
         analogWrite(FAN_THROTTLE_PIN, pwmValue);
         //
         debugSerial.print("[I] T: ");
@@ -359,12 +371,10 @@ void loop()
         //
         next_read_temperature_time = millis() + READ_TEMPERATURE_INTERVAL;
         }
-
-    // standbyStatusLed.Update();
-    // poweronStatusLed.Update();
     //
+    //
+    // updates user button status
     powerButton.check();
-
     }
 
 
