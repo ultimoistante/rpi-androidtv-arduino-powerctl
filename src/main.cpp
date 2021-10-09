@@ -83,7 +83,7 @@ unsigned char fan_was_activated = 0;
 
 #define POWER_BUTTON_LONGPRESS_DELAY        2000
 
-#define SHUTDOWN_GRACE_TIME_MSECS           5000
+#define SHUTDOWN_GRACE_TIME_MSECS           10000
 
 #define STATUS_STANDBY                  0
 #define STATUS_BOOTING                  1
@@ -92,6 +92,7 @@ unsigned char fan_was_activated = 0;
 unsigned char currentStatus = STATUS_STANDBY;
 
 #define ANDROID_BOOT_COMPLETE_LOG_LINE      "sdcardfs: dev_name -> /data/media"
+#define ANDROID_BOOT_COMPLETE_LOG_LINE_ALT  "app=com.google.android.apps.mediashell"
 #define ANDROID_SHUTDOWN_COMPLETE_LOG_LINE  "reboot: Power down"
 
 // debug (software) serial
@@ -340,7 +341,7 @@ void loop()
             // if android is booting, waits for log line dumped on boot complete
             if (currentStatus == STATUS_BOOTING)
                 {
-                if (strstr(serialBuffer, ANDROID_BOOT_COMPLETE_LOG_LINE) != NULL)
+                if (strstr(serialBuffer, ANDROID_BOOT_COMPLETE_LOG_LINE) != NULL || strstr(serialBuffer, ANDROID_BOOT_COMPLETE_LOG_LINE_ALT) != NULL)
                     updateCurrentStatus(STATUS_ON);
                 }
 
