@@ -34,15 +34,21 @@ I had this old modem, found some time ago in local dumpster. It's perfect for my
 *filled unneeded holes with a 3D pen*
 ![](docs/photos/raw_rpi_connector_holes.jpg "raw rpi connetor holes")
 ![](docs/photos/inner_components.jpg "inner view")
+![](docs/photos/after_painting_1.jpg "after painting")
+![](docs/photos/after_painting_2.jpg "after painting")
 
 ### Original modem PCB modifications
 ![](docs/photos/original_board_modifications.jpg "original board modifications")
 
 ### Complete circuit schematics
 ![](docs/arduino-powerctl-schematics_bb.jpg "complete schematics")
+![](docs/photos/powerctl_circuit_detail.jpg "powerctl board")
 Note:
  - for fan control, i've used a C2001 NPN transistor (Ic=700mA), and capacitor is 1000uF 16V (to avoid pwm audible noise);
  - relay is 5V 3A, driver transistor is a generic NPN (i.e: BC547);
  - thermistor is a 10K type;
  - on Arduino TX there is a level converter made with a voltage divider (R1: 2k2, R2: 3k3), to avoid damage on RaspberryPi UART;
+
+(fritzing and pdf files are under docs/ directory)
+
 
