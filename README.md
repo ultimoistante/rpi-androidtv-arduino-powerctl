@@ -34,6 +34,7 @@ I had this old modem, found some time ago in local dumpster. It's perfect for my
 *filled unneeded holes with a 3D pen*
 ![](docs/photos/raw_rpi_connector_holes.jpg "raw rpi connetor holes")
 ![](docs/photos/inner_components.jpg "inner view")
+*NOTE: android sleep button is connected to GPIO21/GND on RaspberryPi. Sorry, not shown in photo. See FAQs on konstaGANG page)*
 ![](docs/photos/after_painting_1.jpg "after painting")
 ![](docs/photos/after_painting_2.jpg "after painting")
 
