@@ -69,7 +69,8 @@ using namespace ace_button;
 #define HW_SERIAL_BAUDRATE            115200
 #define SW_SERIAL_BAUDRATE            57600
 
-#define DUMP_TO_DEBUG_SERIAL
+// uncomment this line to dump android serial on debug serial
+// #define DUMP_TO_DEBUG_SERIAL
 
 #define READ_TEMPERATURE_INTERVAL           2500
 #define FAN_THROTTLE_MIN_TEMP               30.0
@@ -91,8 +92,11 @@ unsigned char fan_was_activated = 0;
 #define STATUS_SHUTDOWN                 3
 unsigned char currentStatus = STATUS_STANDBY;
 
+// these are the strings to wait from android boot log, to detect when device is full booted.
+// Arduino device goes in "STATUS_ON" when receives one of these strings.
 #define ANDROID_BOOT_COMPLETE_LOG_LINE      "sdcardfs: dev_name -> /data/media"
 #define ANDROID_BOOT_COMPLETE_LOG_LINE_ALT  "app=com.google.android.apps.mediashell"
+// this is the string to wait from android boot log, to detect when device has completed shutdown
 #define ANDROID_SHUTDOWN_COMPLETE_LOG_LINE  "reboot: Power down"
 
 // debug (software) serial
